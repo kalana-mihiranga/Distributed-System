@@ -1,7 +1,3 @@
-
-
-
-
 package com.esad.Service;
 
 
@@ -18,56 +14,24 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 
+import static com.esad.Service.KafkaTopics.*;
+import static com.esad.Service.Timeouts.*;
+import static com.esad.Service.Utils.*;
+
+
 @Service
 @RequiredArgsConstructor
 public class ElectionService {
 
 
-    // Kafka Topics
-    private static final String ELECTION_TOPIC = "election-topic";
-    private static final String HEARTBEAT_TOPIC = "heartbeat-topic";
-    private static final String ROLE_TOPIC = "role-assignment-topic";
-    private static final String DOCUMENT_TOPIC = "document-topic";
-    private static final String COUNT_TOPIC = "count-topic";
-    private static final String VALIDATION_TOPIC = "validation-topic";
-    private static final String RESULT_TOPIC = "result-topic";
-
-
-
-
-    private static final long ELECTION_TIMEOUT_MS = 30000;
-    private static final long HEARTBEAT_INTERVAL_MS = 1000;
-    private static final long HEARTBEAT_TIMEOUT_MS = 3000;
-    private static final long ROLE_ASSIGNMENT_DELAY = 3000;
-    private static final long DOCUMENT_PROCESSING_DELAY = 7000;
-
-
-
-    public enum NodeRole {
-        COORDINATOR,
-        LEARNER,
-        PROPOSER,
-        ACCEPTOR,
-        UNASSIGNED
-    }
-
-
-
-    private static final String DOCUMENT = """
-       apple aid ant avid art bat ball base beach bird cat call could cold dog deer
-       elephant egg fish frog goat horse ice jam kite lion monkey nest orange pear
-       queen rabbit sun tiger umbrella violin whale xylophone yacht zebra
-       """;
 
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
 
-
     // Node state
     private final String nodeId = generateNodeId();
     private final AtomicReference<String> coordinator = new AtomicReference<>("❌");
-    private final AtomicReference<String> learner = new AtomicReference<>("❌");
     private final AtomicReference<NodeRole> nodeRole = new AtomicReference<>(NodeRole.UNASSIGNED);
     private volatile boolean electionInProgress = false;
     private volatile boolean awaitingHigherNodeResponse = false;
@@ -166,10 +130,8 @@ public class ElectionService {
             return;
         }
 
-
         List<String> nodes = new ArrayList<>(knownNodes);
         nodes.remove(nodeId);
-
 
         if (nodes.size() < 3) {
             printMessage("Not enough nodes for role assignment (need at least 3)");
@@ -178,7 +140,7 @@ public class ElectionService {
 
 
         // Assign learner (highest remaining ID)
-        String learner = Collections.max(nodes);
+        String learner = Collections.min(nodes);
         nodes.remove(learner);
         kafkaTemplate.send(ROLE_TOPIC, "role:LEARNER:" + learner);
         printMessage("Assigned LEARNER role to: " + learner);
@@ -279,7 +241,7 @@ public class ElectionService {
         scheduler.schedule(() -> {
             kafkaTemplate.send(COUNT_TOPIC, "trigger", "count");
             printMessage("Triggered counting process");
-        }, 1000, TimeUnit.MILLISECONDS);
+        }, 10000, TimeUnit.MILLISECONDS);
     }
 
 
@@ -382,6 +344,7 @@ public class ElectionService {
 
     @KafkaListener(topics = DOCUMENT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
     public void handleDocumentWords(String message) {
+
         if (nodeRole.get() != NodeRole.PROPOSER) return;
 
 
@@ -411,6 +374,7 @@ public class ElectionService {
 
     @KafkaListener(topics = COUNT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
     public void handleCountRequests(String request) {
+
         if (nodeRole.get() != NodeRole.PROPOSER) return;
 
 
@@ -435,6 +399,7 @@ public class ElectionService {
 
     @KafkaListener(topics = VALIDATION_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
     public void handleValidationRequests(String countData) {
+
         if (nodeRole.get() != NodeRole.ACCEPTOR) return;
 
 
@@ -449,7 +414,10 @@ public class ElectionService {
 
     @KafkaListener(topics = RESULT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
     public void handleFinalResults(String result) {
-        if (nodeRole.get() != NodeRole.LEARNER) return;
+        if (nodeRole.get() != NodeRole.LEARNER) {
+            printMessage("Not a learner - ignoring result message");
+            return;
+        }
 
 
         printMessage("Received final result: " + result);
@@ -487,10 +455,6 @@ public class ElectionService {
             if (isCoordinator()) {
                 kafkaTemplate.send(HEARTBEAT_TOPIC, "heartbeat", "HEARTBEAT:" + nodeId);
                 printMessage("♥ Heartbeat sent");
-            }
-            if (isLearner()) {
-                kafkaTemplate.send(HEARTBEAT_TOPIC, "heartbeat", "HEARTBEAT:" + nodeId);
-                printMessage("Learner ♥ Heartbeat sent");
             }
         }, 0, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
@@ -599,7 +563,5 @@ public class ElectionService {
     public boolean isCoordinator() {
         return coordinator.get().equals(nodeId);
     }
-    public boolean isLearner() {
-        return learner.get().equals(nodeId);
-    }
 }
+
