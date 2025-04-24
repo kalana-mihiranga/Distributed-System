@@ -4,6 +4,7 @@ package com.esad.Service;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -23,9 +24,6 @@ import static com.esad.Service.Utils.*;
 @RequiredArgsConstructor
 public class ElectionService {
 
-
-
-
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
 
@@ -41,14 +39,12 @@ public class ElectionService {
     private final Map<Character, List<String>> wordExamples = new ConcurrentHashMap<>();
     private final Set<Character> assignedLetters = ConcurrentHashMap.newKeySet();
 
-
     // Scheduled tasks
     private ScheduledFuture<?> heartbeatFuture;
     private ScheduledFuture<?> heartbeatCheckFuture;
     private final ScheduledFuture<?>[] electionTimeoutFuture = new ScheduledFuture<?>[1];
     private ScheduledFuture<?> roleAssignmentFuture;
     private ScheduledFuture<?> documentProcessingFuture;
-
 
     @PostConstruct
     public void init() {
@@ -57,7 +53,6 @@ public class ElectionService {
         startElection();
         startHeartbeatChecker();
     }
-
 
     @PreDestroy
     public void shutdown() {
@@ -69,11 +64,9 @@ public class ElectionService {
         scheduler.shutdown();
     }
 
-
     private String generateNodeId() {
         return "node-" + new Random().nextInt(1000);
     }
-
 
     private void cancelScheduledTask(ScheduledFuture<?> task) {
         if (task != null && !task.isDone()) {
@@ -81,21 +74,17 @@ public class ElectionService {
         }
     }
 
-
     // ========== Election Process ==========
     public synchronized void startElection() {
         if (electionInProgress || isCoordinator()) {
             return;
         }
 
-
         electionInProgress = true;
         awaitingHigherNodeResponse = true;
         printMessage("Starting election process");
 
-
         kafkaTemplate.send(ELECTION_TOPIC, "election", "ELECTION:" + nodeId);
-
 
         cancelScheduledTask(electionTimeoutFuture[0]);
         electionTimeoutFuture[0] = scheduler.schedule(() -> {
@@ -109,7 +98,6 @@ public class ElectionService {
         }, ELECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
-
     private synchronized void becomeCoordinator() {
         coordinator.set(nodeId);
         nodeRole.set(NodeRole.COORDINATOR);
@@ -117,11 +105,9 @@ public class ElectionService {
         printBox("COORDINATOR ELECTED", "Node " + nodeId + " is now coordinator");
         startHeartbeat();
 
-
         cancelScheduledTask(roleAssignmentFuture);
         roleAssignmentFuture = scheduler.schedule(this::assignRoles, ROLE_ASSIGNMENT_DELAY, TimeUnit.MILLISECONDS);
     }
-
 
     // ========== Role Assignment ==========
     private synchronized void assignRoles() {
@@ -138,40 +124,34 @@ public class ElectionService {
             return;
         }
 
-
-        // Assign learner (highest remaining ID)
+        // Assign learner (lowest remaining ID)
         String learner = Collections.min(nodes);
         nodes.remove(learner);
         kafkaTemplate.send(ROLE_TOPIC, "role:LEARNER:" + learner);
-        printMessage("Assigned LEARNER role to: " + learner);
 
+        printMessage("Assigned LEARNER role to: " + learner);
 
         // Assign 2 proposers and remaining as acceptors
         Collections.sort(nodes, Collections.reverseOrder());
         List<String> proposers = nodes.subList(0, Math.min(2, nodes.size()));
         List<String> acceptors = nodes.subList(proposers.size(), nodes.size());
 
-
         proposers.forEach(node -> {
             kafkaTemplate.send(ROLE_TOPIC, "role:PROPOSER:" + node);
             printMessage("Assigned PROPOSER role to: " + node);
         });
-
 
         acceptors.forEach(node -> {
             kafkaTemplate.send(ROLE_TOPIC, "role:ACCEPTOR:" + node);
             printMessage("Assigned ACCEPTOR role to: " + node);
         });
 
-
         assignLetterRanges(proposers);
-
 
         printBox("ROLE ASSIGNMENT COMPLETE",
                 "Learner: " + learner + "\n" +
                         "Proposers: " + proposers + "\n" +
                         "Acceptors: " + acceptors);
-
 
         // Start document processing after roles are assigned
         cancelScheduledTask(documentProcessingFuture);
@@ -181,33 +161,28 @@ public class ElectionService {
         }, DOCUMENT_PROCESSING_DELAY, TimeUnit.MILLISECONDS);
     }
 
-
     private void assignLetterRanges(List<String> proposers) {
         List<Character> letters = new ArrayList<>();
         for (char c = 'A'; c <= 'Z'; c++) {
             letters.add(c);
         }
 
-
         int lettersPerProposer = (int) Math.ceil(letters.size() / (double) proposers.size());
-
 
         for (int i = 0; i < proposers.size(); i++) {
             int start = i * lettersPerProposer;
             int end = Math.min(start + lettersPerProposer, letters.size());
             List<Character> range = letters.subList(start, end);
 
+            String rangeStr = range.get(0) + "-" + range.get(range.size()-1);
 
-            String rangeStr = range.stream()
-                    .map(String::valueOf)
-                    .collect(Collectors.joining(","));
+            //  kafkaTemplate.send(ROLE_TOPIC, "range:" + proposers.get(i), rangeStr);
+            String rangeMessage = "range:" + proposers.get(i) + ":" + rangeStr;
+            kafkaTemplate.send(ROLE_TOPIC, rangeMessage);
 
-
-            kafkaTemplate.send(ROLE_TOPIC, "range:" + proposers.get(i), rangeStr);
             printMessage("Assigned letters " + rangeStr + " to proposer " + proposers.get(i));
         }
     }
-
 
     // ========== Document Processing ==========
     private void processDocument(String document) {
@@ -216,40 +191,38 @@ public class ElectionService {
             return;
         }
 
-
         printBox("DOCUMENT PROCESSING", "Starting document distribution");
 
+        // Process document line by line
+        Arrays.stream(document.split("\n"))
+                .forEach(line -> {
+                    // Group words by their starting letter (case-insensitive)
+                    Map<Character, List<String>> wordsByLetter = Arrays.stream(line.split("\\s+"))
+                            .filter(word -> !word.isEmpty())
+                            .collect(Collectors.groupingBy(
+                                    word -> Character.toUpperCase(word.charAt(0)),
+                                    Collectors.toList()
+                            ));
 
-        // Group words by their starting letter
-        Map<Character, List<String>> wordsByLetter = Arrays.stream(document.split("\\s+"))
-                .filter(word -> !word.isEmpty())
-                .collect(Collectors.groupingBy(
-                        word -> Character.toUpperCase(word.charAt(0)),
-                        Collectors.toList()
-                ));
-
-
-        // Send words to their respective proposers
-        wordsByLetter.forEach((letter, words) -> {
-            String wordsStr = String.join(" ", words);
-            kafkaTemplate.send(DOCUMENT_TOPIC, "words:" + letter, wordsStr);
-            printMessage("Sent words for letter " + letter + " to proposers");
-        });
-
+                    // Send words to their respective proposers
+                    wordsByLetter.forEach((letter, words) -> {
+                        String wordsStr = String.join(" ", words);
+                        kafkaTemplate.send(DOCUMENT_TOPIC, "words:" + letter, wordsStr);
+                        printMessage("Sent " + words.size() + " words for letter " + letter);
+                    });
+                });
 
         // Trigger counting after short delay
         scheduler.schedule(() -> {
             kafkaTemplate.send(COUNT_TOPIC, "trigger", "count");
             printMessage("Triggered counting process");
-        }, 10000, TimeUnit.MILLISECONDS);
+        }, COUNT_TRIGGER_DELAY, TimeUnit.MILLISECONDS);
     }
-
 
     // ========== Message Handlers ==========
     @KafkaListener(topics = ELECTION_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void handleElectionMessage(String message) {
         printMessage("Received message: " + message);
-
 
         if (message.startsWith("ELECTION:")) {
             String candidateId = message.substring("ELECTION:".length());
@@ -257,7 +230,6 @@ public class ElectionService {
                 knownNodes.add(candidateId);
                 printMessage("Discovered new node: " + candidateId);
             }
-
 
             printMessage("Received ELECTION from " + candidateId);
             if (nodeId.compareTo(candidateId) > 0) {
@@ -271,7 +243,6 @@ public class ElectionService {
         else if (message.startsWith("OK:")) {
             String respondingNodeId = message.substring("OK:".length());
             printMessage("Received OK from " + respondingNodeId);
-
 
             synchronized (this) {
                 if (electionInProgress && nodeId.compareTo(respondingNodeId) < 0) {
@@ -289,9 +260,7 @@ public class ElectionService {
                 lastHeartbeatTime = System.currentTimeMillis();
                 cancelScheduledTask(electionTimeoutFuture[0]);
 
-
                 printBox("NEW COORDINATOR", "Node " + newCoordinator + " is now coordinator");
-
 
                 // Reset role if we were coordinator
                 if (nodeRole.get() == NodeRole.COORDINATOR) {
@@ -303,11 +272,9 @@ public class ElectionService {
         }
     }
 
-
-    @KafkaListener(topics = ROLE_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
+    @KafkaListener(topics = ROLE_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void handleRoleAssignment(String message) {
         printMessage("Received role assignment: " + message);
-
 
         if (message.startsWith("role:LEARNER:")) {
             String learnerId = message.substring("role:LEARNER:".length());
@@ -329,35 +296,90 @@ public class ElectionService {
                 nodeRole.set(NodeRole.ACCEPTOR);
                 printBox("ROLE ASSIGNED", "I am now ACCEPTOR");
             }
-        }
-        else if (message.startsWith("range:")) {
+        }else if (message.startsWith("range:")) {
             String[] parts = message.split(":");
-            if (parts.length > 1 && nodeRole.get() == NodeRole.PROPOSER) {
-                assignedLetters.clear();
-                Arrays.stream(parts[1].split(","))
-                        .forEach(c -> assignedLetters.add(c.charAt(0)));
-                printBox("LETTER RANGES", "Assigned letters: " + parts[1]);
+            if (parts.length == 3) {
+                String targetNodeId = parts[1];
+                String rangeStr = parts[2];
+
+                if (targetNodeId.equals(nodeId) && nodeRole.get() == NodeRole.PROPOSER) {
+                    assignedLetters.clear();
+                    String[] rangeParts = rangeStr.split("-");
+                    char start = rangeParts[0].charAt(0);
+                    char end = rangeParts[1].charAt(0);
+
+                    for (char c = start; c <= end; c++) {
+                        assignedLetters.add(c);
+                    }
+
+                    printBox("LETTER RANGES", "Assigned letters: " + rangeStr);
+                }
             }
         }
+//        else if (message.startsWith("range:")) {
+//            String[] parts = message.split(":");
+//            if (parts.length > 1 && nodeRole.get() == NodeRole.PROPOSER) {
+//                assignedLetters.clear();
+//                String[] rangeParts = parts[1].split("-");
+//                char start = rangeParts[0].charAt(0);
+//                char end = rangeParts[1].charAt(0);
+//
+//                for (char c = start; c <= end; c++) {
+//                    assignedLetters.add(c);
+//                }
+//                printBox("LETTER RANGES", "Assigned letters: " + parts[1]);
+//            }
+//        }
     }
 
 
-    @KafkaListener(topics = DOCUMENT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
-    public void handleDocumentWords(String message) {
 
+
+/// TODO
+//    @KafkaListener(topics = DOCUMENT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
+//    public void handleDocumentWords(String message) {
+//        if (nodeRole.get() != NodeRole.PROPOSER) return;
+//
+//        printMessage("Received document words: " + message);
+//        System.out.println(message);
+//
+//        if (message.startsWith("words:")) {
+//            String[] parts = message.split(":");
+//            char letter = parts[1].charAt(0);
+//            if (assignedLetters.contains(letter)) {
+//                String[] words = parts[2].split(" ");
+//                wordCounts.merge(letter, words.length, Integer::sum);
+//
+//                // Add examples (keep up to 3)
+//                List<String> examples = wordExamples.computeIfAbsent(letter, k -> new ArrayList<>());
+//                for (String word : words) {
+//                    if (examples.size() < 3 && !examples.contains(word)) {
+//                        examples.add(word);
+//                    }
+//                }
+//                printMessage("Processed " + words.length + " words for letter " + letter);
+//            }
+//        }
+//    }
+
+
+
+    @KafkaListener(topics = DOCUMENT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
+    public void handleDocumentWords(ConsumerRecord<String, String> record) {
         if (nodeRole.get() != NodeRole.PROPOSER) return;
 
+        String key = record.key();      // "words:A"
+        String value = record.value();  // "Apple Ant Axis"
 
-        printMessage("Received document words: " + message);
+        printMessage("Received key: " + key + ", value: " + value);
+        System.out.println("Key: " + key);
+        System.out.println("Value: " + value);
 
-
-        if (message.startsWith("words:")) {
-            String[] parts = message.split(":");
-            char letter = parts[1].charAt(0);
+        if (key != null && key.startsWith("words:")) {
+            char letter = key.charAt(6);  // e.g., 'A'
             if (assignedLetters.contains(letter)) {
-                String[] words = parts[2].split(" ");
+                String[] words = value.split(" ");
                 wordCounts.merge(letter, words.length, Integer::sum);
-
 
                 // Add examples (keep up to 3)
                 List<String> examples = wordExamples.computeIfAbsent(letter, k -> new ArrayList<>());
@@ -372,16 +394,15 @@ public class ElectionService {
     }
 
 
-    @KafkaListener(topics = COUNT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
+    @KafkaListener(topics = COUNT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void handleCountRequests(String request) {
-
         if (nodeRole.get() != NodeRole.PROPOSER) return;
-
 
         printMessage("Received count request: " + request);
 
-
-        wordCounts.forEach((letter, count) -> {
+        // Ensure all assigned letters are reported, even if zero
+        assignedLetters.forEach(letter -> {
+            int count = wordCounts.getOrDefault(letter, 0);
             String examples = wordExamples.getOrDefault(letter, List.of())
                     .stream()
                     .collect(Collectors.joining(","));
@@ -390,63 +411,160 @@ public class ElectionService {
             printMessage("Sent count for letter " + letter + " to acceptors");
         });
 
-
-        printMessage("Completed sending all counts for validation");
         wordCounts.clear();
         wordExamples.clear();
     }
 
-
-    @KafkaListener(topics = VALIDATION_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
+    @KafkaListener(topics = VALIDATION_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void handleValidationRequests(String countData) {
-
         if (nodeRole.get() != NodeRole.ACCEPTOR) return;
 
-
         printMessage("Received validation request: " + countData);
-
 
         // Simple validation - just forward to learner
         kafkaTemplate.send(RESULT_TOPIC, "validated", countData);
         printMessage("Validated and forwarded count: " + countData.split(":")[0]);
     }
 
+//    @KafkaListener(topics = RESULT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
+//    public void handleFinalResults(String result) {
+//        if (nodeRole.get() != NodeRole.LEARNER) {
+//           // printMessage("Not a learner - ignoring result message");
+//            return;
+//        }
+//
+//        printMessage("Received final result: " + result);
+//
+//        String[] parts = result.split(":");
+//        if (parts.length < 2) {
+//            printMessage("Invalid result format: " + result);
+//            return;
+//        }
+//
+//        try {
+//            char letter = parts[0].charAt(0);
+//            int count = Integer.parseInt(parts[1]);
+//            String[] examples = parts.length > 2 ? parts[2].split(",") : new String[0];
+//
+//            // Update counts and examples
+//            wordCounts.merge(letter, count, Integer::sum);
+//
+//            List<String> currentExamples = wordExamples.computeIfAbsent(letter, k -> new ArrayList<>());
+//            for (String example : examples) {
+//                if (!example.isEmpty() && currentExamples.size() < 3 && !currentExamples.contains(example)) {
+//                    currentExamples.add(example);
+//                }
+//            }
+//
+//            printMessage("Updated count for " + letter + ": " + wordCounts.get(letter) +
+//                    " words (examples: " + currentExamples + ")");
+//
+//            // Check if we have all letters (A-Z)
+//            if (wordCounts.size() >= 26) {
+//                printFinalResults();
+//            } else {
+//                printMessage("Waiting for more letters. Current count: " + wordCounts.size() + "/26");
+//            }
+//        } catch (Exception e) {
+//            printMessage("Error processing result: " + e.getMessage());
+//        }
+//    }
 
-    @KafkaListener(topics = RESULT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
-    public void handleFinalResults(String result) {
+
+    @KafkaListener(topics = RESULT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
+    public void handleFinalResult(String result) {
         if (nodeRole.get() != NodeRole.LEARNER) {
-            printMessage("Not a learner - ignoring result message");
             return;
         }
 
-
         printMessage("Received final result: " + result);
 
-
         String[] parts = result.split(":");
-        char letter = parts[0].charAt(0);
-        int count = Integer.parseInt(parts[1]);
-        String[] examples = parts.length > 2 ? parts[2].split(",") : new String[0];
-
-
-        wordCounts.merge(letter, count, Integer::sum);
-
-
-        // Add examples if we don't have enough yet
-        List<String> currentExamples = wordExamples.computeIfAbsent(letter, k -> new ArrayList<>());
-        for (String example : examples) {
-            if (currentExamples.size() < 3 && !currentExamples.contains(example)) {
-                currentExamples.add(example);
-            }
+        if (parts.length < 2) {
+            printMessage("Invalid result format: " + result);
+            return;
         }
 
+        try {
+            char letter = parts[0].charAt(0);
+            int count = Integer.parseInt(parts[1]);
+            String[] examples = (parts.length == 3) ? parts[2].split(",") : new String[0];
 
-        // Print the final results box when we have all letters (A-Z)
-        if (wordCounts.size() >= 26) {
-            printFinalResults();
+            // Merge word count
+            wordCounts.merge(letter, count, Integer::sum);
+
+            // Merge up to 3 unique examples
+            List<String> currentExamples = wordExamples.computeIfAbsent(letter, k -> new ArrayList<>());
+            for (String example : examples) {
+                if (!example.isEmpty() && currentExamples.size() < 3 && !currentExamples.contains(example)) {
+                    currentExamples.add(example);
+                }
+            }
+
+            printMessage("Updated count for " + letter + ": " + wordCounts.get(letter) +
+                    " words (examples: " + currentExamples + ")");
+
+            // Completion check
+            if (wordCounts.size() >= 26) {
+                printFinalResults();
+            } else {
+                printMessage("Waiting for more letters. Current count: " + wordCounts.size() + "/26");
+            }
+
+        } catch (Exception e) {
+            printMessage("Error processing result: " + e.getMessage());
         }
     }
 
+    private synchronized void printFinalResults() {
+        // Ensure we have all letters A-Z
+        for (char c = 'A'; c <= 'Z'; c++) {
+            wordCounts.putIfAbsent(c, 0);
+        }
+
+        // Build the results table
+        StringBuilder results = new StringBuilder();
+        results.append("\n╔══════════════════════════════════════════════════════════╗\n");
+        results.append("║                 FINAL WORD COUNT RESULTS                 ║\n");
+        results.append("╠══════════════════════════════════════════════════════════╣\n");
+        results.append("║ Letter   Count   Example Words                          ║\n");
+        results.append("╠══════════════════════════════════════════════════════════╣\n");
+
+        // Use arrays to work around the effectively final requirement
+        int[] totalWords = {0};
+        int[] lettersWithWords = {0};
+
+        // Sort letters alphabetically
+        wordCounts.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    char letter = entry.getKey();
+                    int count = entry.getValue();
+                    totalWords[0] += count;
+
+                    List<String> examples = wordExamples.getOrDefault(letter, Collections.emptyList());
+                    String examplesStr = examples.isEmpty() ? "None" :
+                            examples.stream().limit(3).collect(Collectors.joining(", "));
+
+                    if (count > 0) {
+                        lettersWithWords[0]++;
+                    }
+
+                    results.append(String.format("║   %s      %-6d %-36s ║\n",
+                            letter, count, examplesStr));
+                });
+
+        // Add summary
+        results.append("╠══════════════════════════════════════════════════════════╣\n");
+        results.append(String.format("║ Letters with words: %d/26%45s ║\n", lettersWithWords[0], ""));
+        results.append(String.format("║ Total words counted: %d%43s ║\n", totalWords[0], ""));
+        results.append(String.format("║ Node: %-50s ║\n", nodeId));
+        results.append(String.format("║ Role: %-49s ║\n", nodeRole.get()));
+        results.append(String.format("║ Coordinator: %-44s ║\n", coordinator.get()));
+        results.append("╚══════════════════════════════════════════════════════════╝\n");
+
+        System.out.println(results.toString());
+    }
 
     // ========== Heartbeat System ==========
     private void startHeartbeat() {
@@ -458,7 +576,6 @@ public class ElectionService {
             }
         }, 0, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
-
 
     private void startHeartbeatChecker() {
         cancelScheduledTask(heartbeatCheckFuture);
@@ -475,8 +592,7 @@ public class ElectionService {
         }, HEARTBEAT_TIMEOUT_MS, HEARTBEAT_TIMEOUT_MS/2, TimeUnit.MILLISECONDS);
     }
 
-
-    @KafkaListener(topics = HEARTBEAT_TOPIC , groupId = "${spring.kafka.consumer.group-id}")
+    @KafkaListener(topics = HEARTBEAT_TOPIC, groupId = "${spring.kafka.consumer.group-id}")
     public void handleHeartbeat(String message) {
         if (message.startsWith("HEARTBEAT:")) {
             String coordinatorId = message.substring("HEARTBEAT:".length());
@@ -487,60 +603,15 @@ public class ElectionService {
         }
     }
 
-
-    // ========== Final Results Display ==========
-    private void printFinalResults() {
-        StringBuilder content = new StringBuilder();
-
-
-        // Sort letters alphabetically
-        wordCounts.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> {
-                    char letter = entry.getKey();
-                    int count = entry.getValue();
-                    String examples = wordExamples.getOrDefault(letter, List.of())
-                            .stream()
-                            .collect(Collectors.joining(","));
-
-
-                    content.append(String.format("%s: %d words (%s)", letter, count, examples))
-                            .append("\n");
-                });
-
-
-        String border = "═".repeat(58);
-        System.out.println("\n╔" + border + "╗");
-        System.out.println("║" + centerText("FINAL RESULTS", 58) + "║");
-        System.out.println("╠" + "─".repeat(58) + "╣");
-
-
-        // Split content into lines and format each line
-        Arrays.stream(content.toString().split("\n"))
-                .forEach(line -> {
-                    String paddedLine = String.format("%-52s", line);
-                    System.out.println("║ " + paddedLine + " ║");
-                });
-
-
-        System.out.println("║ " + padRight("Node: " + nodeId, 56) + " ║");
-        System.out.println("║ " + padRight("Role: " + nodeRole.get(), 56) + " ║");
-        System.out.println("║ " + padRight("Coordinator: " + coordinator.get(), 56) + " ║");
-        System.out.println("╚" + border + "╝");
-    }
-
-
     // ========== Utility Methods ==========
     private String padRight(String s, int n) {
         return String.format("%-" + n + "s", s);
     }
 
-
     private String centerText(String text, int width) {
         int padding = (width - text.length()) / 2;
         return String.format("%" + (padding + text.length()) + "s", text);
     }
-
 
     private void printBox(String title, String content) {
         String border = "═".repeat(60);
@@ -554,14 +625,15 @@ public class ElectionService {
         System.out.println("╚" + border + "╝");
     }
 
-
     private void printMessage(String msg) {
         System.out.println("[" + System.currentTimeMillis() + "][" + nodeId + "][" + nodeRole.get() + "] " + msg);
     }
 
-
     public boolean isCoordinator() {
         return coordinator.get().equals(nodeId);
     }
-}
 
+    public enum NodeRole {
+        COORDINATOR, PROPOSER, ACCEPTOR, LEARNER, UNASSIGNED
+    }
+}
