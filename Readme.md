@@ -88,7 +88,7 @@ Learner aggregates final results
 📜 Logging Examples
 Election Log:
 
-plaintext
+
 ╔══════════════════════════════════════════════╗
 ║           COORDINATOR ELECTED               ║
 ╠──────────────────────────────────────────────╣
@@ -98,9 +98,5 @@ plaintext
 ╚══════════════════════════════════════════════╝
 Processing Log:
 
-plaintext
 [12:34:56][node-742][PROPOSER] Processed 42 words for letter B
-📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
 
-<div align="center"> <i>✨ "Distributed systems shouldn't be a mystery" ✨</i> </div> 
