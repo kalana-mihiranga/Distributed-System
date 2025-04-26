@@ -1,10 +1,24 @@
 package com.esad.Service;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 public class Utils {
-    static final String DOCUMENT = """
-       apple aid ant avid art bat ball base beach bird cat call could cold dog deer
-       elephant egg fish frog goat horse ice jam kite lion monkey nest orange pear
-       queen rabbit sun tiger umbrella violin whale xylophone yacht zebra
-       """;
+
+    static final String DOCUMENT;
+
+    static {
+        String documentContent = "";
+        try {
+            Path path = Paths.get(Utils.class.getClassLoader().getResource("document.txt").toURI());
+            documentContent = Files.readString(path);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        DOCUMENT = documentContent;
+    }
+
+
 
 }
