@@ -5,5 +5,5 @@ public enum NodeRole {
     LEARNER,
     PROPOSER,
     ACCEPTOR,
-    UNASSIGNED
+    CANDIDATE
 }
