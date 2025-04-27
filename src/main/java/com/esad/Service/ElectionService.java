@@ -485,7 +485,52 @@ public class ElectionService {
         sidecar.printMessage(nodeId, nodeRole.get(),"Received validation request: " + countData);
 
 
-        // Simple validation - just forward to learner
+    // 1. Split into components: letter:count[:examples]
+    String[] parts = countData.split(":", 3);
+    if (parts.length < 2) {
+        sidecar.printMessage(nodeId, nodeRole.get(), "Invalid format, dropping: " + countData);
+        return;
+    }
+
+    String letterPart = parts[0];
+    String countPart = parts[1];
+    String examplesPart = parts.length == 3 ? parts[2] : "";
+
+    // 2. Validate letter is a single A–Z character
+    if (letterPart.length() != 1 || !Character.isLetter(letterPart.charAt(0))) {
+        sidecar.printMessage(nodeId, nodeRole.get(), "Invalid letter, dropping: " + letterPart);
+        return;
+    }
+    char letter = Character.toUpperCase(letterPart.charAt(0));
+
+    // 3. Validate count is a non-negative integer
+    int count;
+    try {
+        count = Integer.parseInt(countPart);
+        if (count < 0) {
+            sidecar.printMessage(nodeId, nodeRole.get(), "Negative count, dropping: " + countPart);
+            return;
+        }
+    } catch (NumberFormatException e) {
+        sidecar.printMessage(nodeId, nodeRole.get(), "Malformed count, dropping: " + countPart);
+        return;
+    }
+
+    // 4. (Optional) Validate examples: at most 3, and none are empty
+    if (!examplesPart.isEmpty()) {
+        String[] examples = examplesPart.split(",");
+        if (examples.length > 3) {
+            sidecar.printMessage(nodeId, nodeRole.get(), "Too many examples, trimming to 3");
+            // trim down to first 3
+            examplesPart = String.join(",", Arrays.copyOf(examples, 3));
+        }
+        for (String ex : examplesPart.split(",")) {
+            if (ex.isBlank()) {
+                sidecar.printMessage(nodeId, nodeRole.get(), "Empty example found, dropping message");
+                return;
+            }
+        }
+    }
         kafkaTemplate.send(RESULT_TOPIC, "validated", countData);
 
         sidecar.printMessage(nodeId, nodeRole.get(),"Validated and forwarded count: " + countData.split(":")[0]);
